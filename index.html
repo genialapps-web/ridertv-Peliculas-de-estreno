@@ -6,6 +6,12 @@
 <title>RIDER TV</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+<!-- ===== REPRODUCTOR VIDEO.JS + HLS.JS ===== -->
+<link href="https://vjs.zencdn.net/8.6.1/video-js.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.1/dist/hls.min.js"></script>
+<script src="https://vjs.zencdn.net/8.6.1/video.min.js"></script>
+
 <style>
   :root{
     --bg:#000000;
@@ -213,20 +219,25 @@
   .type-pill{font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid #444;color:#ccc;}
   .license-tag{display:inline-block;margin-top:10px;font-size:12px;color:#46d369;border:1px solid #2f5c3f;padding:3px 10px;border-radius:20px;}
 
-  /* ===== PLAYER ===== */
+  /* ===== PLAYER OVERLAY ===== */
   #player-overlay{
     position:fixed;inset:0;background:#000;z-index:4000;display:none;
-    align-items:center;justify-content:center;
+    flex-direction:column;
   }
   #player-overlay.show{display:flex;}
-  #player-overlay video{width:100%;height:100%;}
   .player-top-controls{position:absolute;top:20px;right:20px;z-index:10;display:flex;gap:12px;}
   .player-icon-btn{
     color:#fff;font-size:18px;
     width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.6);
     display:flex;align-items:center;justify-content:center;
+    cursor:pointer;
   }
   .player-title-bar{position:absolute;top:24px;left:24px;z-index:10;font-size:20px;font-weight:700;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.8);max-width:60%;}
+  
+  /* Estilos para Video.js */
+  .video-js{width:100%;height:100%;position:absolute;top:0;left:0;}
+  .vjs-big-play-button{font-size:3em !important;width:2em !important;height:2em !important;line-height:2em !important;border-radius:50% !important;border:none !important;background-color:rgba(229,9,20,.8) !important;}
+  .vjs-big-play-button:hover{background-color:rgba(229,9,20,1) !important;}
 
   /* ===== FOOTER ===== */
   footer{padding:60px 40px;color:var(--text-dim);font-size:13px;border-top:1px solid #222;margin-top:20px;}
@@ -273,7 +284,7 @@
 <body>
 
 <div id="connection-banner">
-  No se pudo conectar con Firebase. Revisa tu conexión a internet o si un bloqueador de anuncios está impidiendo la carga de gstatic.com / cdnjs.cloudflare.com.
+  No se pudo conectar con Firebase. Revisa tu conexión a internet o si un bloqueador de anuncios está impidiendo la carga.
 </div>
 
 <!-- ================= NAVBAR ================= -->
@@ -377,16 +388,31 @@
     </div>
     <div class="player-icon-btn" id="closePlayer">✕</div>
   </div>
-  <video id="videoPlayer" controls autoplay playsinline x-webkit-airplay="allow"></video>
+  <!-- El reproductor se crea dinámicamente aquí -->
+  <div id="video-container" style="width:100%;height:100%;position:absolute;top:0;left:0;"></div>
 </div>
 
 <div class="toast" id="toast"></div>
 
-<!-- ================= FIREBASE (compat, vía cdnjs) ================= -->
+<!-- ================= FIREBASE ================= -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-app-compat.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.1/firebase-firestore-compat.min.js"></script>
 <script src="config.js"></script>
 <script>
+/* ============================================================
+   UTILIDAD: CONVERTIR ENLACE HTTP A HTTPS AUTOMÁTICAMENTE
+   ============================================================ */
+function asegurarHttps(url){
+  if(!url) return url;
+  // Si ya es HTTPS, lo devuelve igual
+  if(url.startsWith('https://')) return url;
+  // Si es HTTP, le pone el proxy para que funcione en GitHub Pages
+  if(url.startsWith('http://')){
+    return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+  }
+  return url;
+}
+
 /* ============================================================
    ESTADO GLOBAL
    ============================================================ */
@@ -395,6 +421,7 @@ let currentFilter = "all";
 let currentDetailItem = null;
 let catalogLoaded = false;
 let expandedRows = new Set();
+let currentPlayer = null;
 const ROW_LIMIT = 6;
 
 function $(sel){ return document.querySelector(sel); }
@@ -433,7 +460,7 @@ $all(".nav-links li").forEach(li=>{
 });
 
 /* ============================================================
-   CARGA DE CATÁLOGO DESDE FIRESTORE (tiempo real)
+   CARGA DE CATÁLOGO DESDE FIRESTORE
    ============================================================ */
 function listenCatalog(){
   if(!db){
@@ -456,243 +483,281 @@ function listenCatalog(){
 }
 
 /* ============================================================
-   RENDER: SITIO PÚBLICO
-   ============================================================ */
-function renderPublicSite(searchTerm=""){
-  if(!catalogLoaded){
-    $("#loading-state").style.display = "block";
-    $("#hero").style.display = "none";
-    $("#empty-catalog").style.display = "none";
-    return;
-  }
-  $("#loading-state").style.display = "none";
-
-  let items = CATALOG.slice();
-
-  if(currentFilter !== "all"){
-    items = items.filter(i => i.type === currentFilter);
-  }
-  if(searchTerm){
-    items = items.filter(i =>
-      (i.title||"").toLowerCase().includes(searchTerm) ||
-      (i.genre||"").toLowerCase().includes(searchTerm)
-    );
-  }
-
-  $("#empty-catalog").style.display = CATALOG.length === 0 ? "block" : "none";
-  $("#hero").style.display = CATALOG.length === 0 ? "none" : "flex";
-
-  renderHero(items[0] || CATALOG[0]);
-  renderRows(items, searchTerm);
-}
-
-function renderHero(item){
-  if(!item){
-    $("#heroTitle").textContent = "";
-    return;
-  }
-  $("#hero-bg-blur").style.backgroundImage = `url('${item.imageUrl}')`;
-  $("#hero-bg-full").src = item.imageUrl;
-  $("#heroTag").textContent = item.type === "serie" ? "SERIE DESTACADA" : "PELÍCULA DESTACADA";
-  $("#heroTitle").textContent = item.title;
-  $("#heroMeta").innerHTML = `
-    <span class="rating-pill">${Number(item.rating).toFixed(1)} ★</span>
-    <span>${item.year}</span>
-    <span class="hero-badge">${item.duration}</span>
-    <span class="hero-badge">${escapeHtml(item.genre)}</span>
-  `;
-  $("#heroDesc").textContent = item.description || "";
-  $("#heroPlayBtn").onclick = ()=> playVideo(item);
-  $("#heroInfoBtn").onclick = ()=> openDetail(item);
-}
-
-function groupByGenre(items){
-  const groups = {};
-  items.forEach(i=>{
-    const genres = (i.genre || "General").split(",").map(g=>g.trim()).filter(Boolean);
-    (genres.length ? genres : ["General"]).forEach(g=>{
-      if(!groups[g]) groups[g] = [];
-      groups[g].push(i);
-    });
-  });
-  return groups;
-}
-
-function renderRows(items, searchTerm){
-  const container = $("#rows");
-  container.innerHTML = "";
-
-  if(items.length === 0){
-    if(CATALOG.length > 0){
-      container.innerHTML = `<div style="padding:80px 40px;color:var(--text-dim);text-align:center;">
-        No se encontraron resultados${searchTerm ? ` para "${escapeHtml(searchTerm)}"` : ""}.
-      </div>`;
-    }
-    return;
-  }
-
-  container.appendChild(buildRow("Agregados recientemente", items));
-
-  const groups = groupByGenre(items);
-  Object.keys(groups).forEach(genre=>{
-    container.appendChild(buildRow(genre, groups[genre]));
-  });
-}
-
-function buildRow(title, items){
-  const section = document.createElement("div");
-  section.className = "row-section";
-  const rowId = "row-" + title.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() + "-" + Math.random().toString(36).slice(2,6);
-  const isExpanded = expandedRows.has(title);
-  const visibleItems = isExpanded ? items : items.slice(0, ROW_LIMIT);
-  const hasMore = items.length > ROW_LIMIT;
-
-  section.innerHTML = `
-    <div class="row-title">${escapeHtml(title)}</div>
-    <div class="row-track-wrap ${isExpanded ? "expanded" : ""}">
-      <div class="row-arrow left" data-target="${rowId}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
-      </div>
-      <div class="row-track ${isExpanded ? "expanded" : ""}" id="${rowId}">
-        ${visibleItems.map(item => cardHtml(item)).join("")}
-        ${hasMore ? moreCardHtml(title, isExpanded) : ""}
-      </div>
-      <div class="row-arrow right" data-target="${rowId}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-      </div>
-    </div>
-  `;
-
-  setTimeout(()=>{
-    const left = section.querySelector(".row-arrow.left");
-    const right = section.querySelector(".row-arrow.right");
-    const track = section.querySelector(".row-track");
-    left.addEventListener("click", ()=> track.scrollBy({left:-700, behavior:"smooth"}));
-    right.addEventListener("click", ()=> track.scrollBy({left:700, behavior:"smooth"}));
-    section.querySelectorAll(".card").forEach(card=>{
-      card.addEventListener("click", ()=>{
-        const item = CATALOG.find(i=>i.id === card.dataset.id);
-        if(item) openDetail(item);
-      });
-    });
-    const moreBtn = section.querySelector(".more-card");
-    if(moreBtn){
-      moreBtn.addEventListener("click", ()=>{
-        if(expandedRows.has(title)) expandedRows.delete(title);
-        else expandedRows.add(title);
-        renderPublicSite($("#searchInput").value.trim().toLowerCase());
-      });
-    }
-  }, 0);
-
-  return section;
-}
-
-function moreCardHtml(title, isExpanded){
-  return `
-    <div class="more-card" data-row="${escapeHtml(title)}">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2">
-        ${isExpanded
-          ? '<polyline points="18 15 12 9 6 15"/>'
-          : '<polyline points="6 9 12 15 18 9"/>'}
-      </svg>
-      <span>${isExpanded ? "Ver menos" : "Ver más"}</span>
-    </div>
-  `;
-}
-
-function cardHtml(item){
-  return `
-    <div class="card" data-id="${item.id}">
-      <div class="card-poster">
-        <img src="${item.imageUrl}" alt="${escapeHtml(item.title)}" loading="lazy">
-        <div class="card-play-overlay">
-          <div class="circle">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M8 5v14l11-7z"/></svg>
-          </div>
-        </div>
-      </div>
-      <div class="card-title">${escapeHtml(item.title)}</div>
-      <div class="card-meta">
-        <span class="rating-pill">${Number(item.rating).toFixed(1)}</span>
-        <span>${item.year}</span>
-        <span>${item.type === "serie" ? "Serie" : "Película"}</span>
-      </div>
-    </div>
-  `;
-}
-
-/* ============================================================
-   MODAL DE DETALLE
-   ============================================================ */
-function openDetail(item){
-  currentDetailItem = item;
-  $("#modalImg").src = item.imageUrl;
-  $("#modalTitle").textContent = item.title;
-  $("#modalRating").textContent = Number(item.rating).toFixed(1) + " ★";
-  $("#modalYear").textContent = item.year;
-  $("#modalDuration").textContent = item.duration;
-  $("#modalType").textContent = item.type === "serie" ? "Serie" : "Película";
-  $("#modalDesc").textContent = item.description || "";
-  $("#modalGenre").textContent = item.genre;
-  $("#modalLicense").textContent = item.license;
-  $("#detailModal").classList.add("show");
-  document.body.style.overflow = "hidden";
-}
-$("#closeDetail").addEventListener("click", closeDetail);
-$("#detailModal").addEventListener("click", (e)=>{
-  if(e.target.id === "detailModal") closeDetail();
-});
-function closeDetail(){
-  $("#detailModal").classList.remove("show");
-  document.body.style.overflow = "";
-}
-$("#modalPlayBtn").addEventListener("click", ()=>{
-  if(currentDetailItem) playVideo(currentDetailItem);
-});
-
-/* ============================================================
-   REPRODUCTOR + TRANSMITIR A OTRO DISPOSITIVO
-   ============================================================ */
-function playVideo(item){
-  closeDetail();
-  $("#playerTitle").textContent = item.title;
-  const video = $("#videoPlayer");
-  video.src = item.videoUrl;
-  $("#player-overlay").classList.add("show");
-  document.body.style.overflow = "hidden";
-  video.play().catch(()=>{});
-}
-$("#closePlayer").addEventListener("click", ()=>{
-  const video = $("#videoPlayer");
-  video.pause();
-  video.src = "";
-  $("#player-overlay").classList.remove("show");
-  document.body.style.overflow = "";
-});
-
-$("#castBtn").addEventListener("click", async ()=>{
-  const video = $("#videoPlayer");
-  try{
-    if(video.remote && typeof video.remote.prompt === "function"){
-      // Remote Playback API (Chrome / Android / Chromecast)
-      await video.remote.prompt();
-    } else if(typeof video.webkitShowPlaybackTargetPicker === "function"){
-      // AirPlay (Safari)
-      video.webkitShowPlaybackTargetPicker();
-    } else {
-      showToast("Tu navegador no soporta transmitir a otro dispositivo.", false);
-    }
-  }catch(err){
-    console.error(err);
-    showToast("No se encontraron dispositivos disponibles para transmitir.", false);
-  }
-});
-
-/* ============================================================
-   INICIO
-   ============================================================ */
-listenCatalog();
-</script>
-</body>
-</html>
+   REPRODUCIR VIDEO CON VIDEO.JS + HLS.JS
+    ============================================================ */
+ function playVideo(item){
+   closeDetail();
+   $("#playerTitle").textContent = item.title;
+   const container = $("#video-container");
+   
+   // Detener reproductor anterior si existe
+   if(currentPlayer){
+     currentPlayer.dispose();
+     currentPlayer = null;
+   }
+   
+   // Limpiar contenedor
+   container.innerHTML = '';
+   
+   // Crear elemento de video
+   const videoEl = document.createElement('video');
+   videoEl.id = 'video-player';
+   videoEl.className = 'video-js vjs-big-play-centered';
+   videoEl.controls = true;
+   videoEl.autoplay = true;
+   videoEl.playsInline = true;
+   container.appendChild(videoEl);
+   
+   // Asegurar que el enlace sea HTTPS
+   let videoUrl = asegurarHttps(item.videoUrl);
+   const isHls = videoUrl.includes('.m3u8');
+   
+   // Inicializar reproductor
+   currentPlayer = videojs('video-player', {
+     fluid: true,
+     preload: 'auto',
+     html5: {
+       vhs: { enabled: true },
+       nativeVideoTracks: false,
+       nativeAudioTracks: false,
+       nativeTextTracks: false
+     }
+   });
+   
+   // Cargar el video según el tipo
+   if(isHls && Hls.isSupported()){
+     // Para M3U8 usamos HLS.js
+     const hls = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 60 });
+     hls.loadSource(videoUrl);
+     hls.attachMedia(videoEl);
+     hls.on(Hls.Events.MANIFEST_PARSED, () => {
+       currentPlayer.play().catch(e => console.log("Autoplay bloqueado:", e));
+     });
+     currentPlayer.hls = hls;
+   } else {
+     // Para MP4 y otros
+     currentPlayer.src(videoUrl);
+     currentPlayer.play().catch(e => console.log("Autoplay bloqueado:", e));
+   }
+   
+   // Mostrar reproductor
+   $("#player-overlay").classList.add("show");
+   document.body.style.overflow = "hidden";
+ }
+ // Cerrar reproductor
+ $("#closePlayer").addEventListener("click", ()=>{
+   if(currentPlayer){
+     currentPlayer.pause();
+     currentPlayer.dispose();
+     currentPlayer = null;
+   }
+   $("#player-overlay").classList.remove("show");
+   document.body.style.overflow = "";
+ });
+ /* ============================================================
+    RENDER: SITIO PÚBLICO
+    ============================================================ */
+ function renderPublicSite(searchTerm=""){
+   if(!catalogLoaded){
+     $("#loading-state").style.display = "block";
+     $("#hero").style.display = "none";
+     $("#empty-catalog").style.display = "none";
+     return;
+   }
+   $("#loading-state").style.display = "none";
+   let items = CATALOG.slice();
+   if(currentFilter !== "all"){
+     items = items.filter(i => i.type === currentFilter);
+   }
+   if(searchTerm){
+     items = items.filter(i =>
+       (i.title||"").toLowerCase().includes(searchTerm) ||
+       (i.genre||"").toLowerCase().includes(searchTerm)
+     );
+   }
+   $("#empty-catalog").style.display = CATALOG.length === 0 ? "block" : "none";
+   $("#hero").style.display = CATALOG.length === 0 ? "none" : "flex";
+   renderHero(items[0] || CATALOG[0]);
+   renderRows(items, searchTerm);
+ }
+ function renderHero(item){
+   if(!item){
+     $("#heroTitle").textContent = "";
+     return;
+   }
+   $("#hero-bg-blur").style.backgroundImage = `url('${item.imageUrl}')`;
+   $("#hero-bg-full").src = item.imageUrl;
+   $("#heroTag").textContent = item.type === "serie" ? "SERIE DESTACADA" : "PELÍCULA DESTACADA";
+   $("#heroTitle").textContent = item.title;
+   $("#heroMeta").innerHTML = `
+     <span class="rating-pill">${Number(item.rating).toFixed(1)} ★</span>
+     <span>${item.year}</span>
+     <span class="hero-badge">${item.duration}</span>
+     <span class="hero-badge">${escapeHtml(item.genre)}</span>
+   `;
+   $("#heroDesc").textContent = item.description || "";
+   $("#heroPlayBtn").onclick = ()=> playVideo(item);
+   $("#heroInfoBtn").onclick = ()=> openDetail(item);
+ }
+ function groupByGenre(items){
+   const groups = {};
+   items.forEach(i=>{
+     const genres = (i.genre || "General").split(",").map(g=>g.trim()).filter(Boolean);
+     (genres.length ? genres : ["General"]).forEach(g=>{
+       if(!groups[g]) groups[g] = [];
+       groups[g].push(i);
+     });
+   });
+   return groups;
+ }
+ function renderRows(items, searchTerm){
+   const container = $("#rows");
+   container.innerHTML = "";
+   if(items.length === 0){
+     if(CATALOG.length > 0){
+       container.innerHTML = `<div style="padding:80px 40px;color:var(--text-dim);text-align:center;">
+         No se encontraron resultados${searchTerm ? ` para "${escapeHtml(searchTerm)}"` : ""}.
+       </div>`;
+     }
+     return;
+   }
+   container.appendChild(buildRow("Agregados recientemente", items));
+   const groups = groupByGenre(items);
+   Object.keys(groups).forEach(genre=>{
+     container.appendChild(buildRow(genre, groups[genre]));
+   });
+ }
+ function buildRow(title, items){
+   const section = document.createElement("div");
+   section.className = "row-section";
+   const rowId = "row-" + title.replace(/[^a-zA-Z0-9]/g, "").toLowerCase() + "-" + Math.random().toString(36).slice(2,6);
+   const isExpanded = expandedRows.has(title);
+   const visibleItems = isExpanded ? items : items.slice(0, ROW_LIMIT);
+   const hasMore = items.length > ROW_LIMIT;
+   section.innerHTML = `
+     <div class="row-title">${escapeHtml(title)}</div>
+     <div class="row-track-wrap ${isExpanded ? "expanded" : ""}">
+       <div class="row-arrow left" data-target="${rowId}">
+         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+       </div>
+       <div class="row-track ${isExpanded ? "expanded" : ""}" id="${rowId}">
+         ${visibleItems.map(item => cardHtml(item)).join("")}
+         ${hasMore ? moreCardHtml(title, isExpanded) : ""}
+       </div>
+       <div class="row-arrow right" data-target="${rowId}">
+         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+       </div>
+     </div>
+   `;
+   setTimeout(()=>{
+     const left = section.querySelector(".row-arrow.left");
+     const right = section.querySelector(".row-arrow.right");
+     const track = section.querySelector(".row-track");
+     left.addEventListener("click", ()=> track.scrollBy({left:-700, behavior:"smooth"}));
+     right.addEventListener("click", ()=> track.scrollBy({left:700, behavior:"smooth"}));
+     section.querySelectorAll(".card").forEach(card=>{
+       card.addEventListener("click", ()=>{
+         const item = CATALOG.find(i=>i.id === card.dataset.id);
+         if(item) openDetail(item);
+       });
+     });
+     const moreBtn = section.querySelector(".more-card");
+     if(moreBtn){
+       moreBtn.addEventListener("click", ()=>{
+         if(expandedRows.has(title)) expandedRows.delete(title);
+         else expandedRows.add(title);
+         renderPublicSite($("#searchInput").value.trim().toLowerCase());
+       });
+     }
+   }, 0);
+   return section;
+ }
+ function moreCardHtml(title, isExpanded){
+   return `
+     <div class="more-card" data-row="${escapeHtml(title)}">
+       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2">
+         ${isExpanded
+           ? '<polyline points="18 15 12 9 6 15"/>'
+           : '<polyline points="6 9 12 15 18 9"/>'}
+       </svg>
+       <span>${isExpanded ? "Ver menos" : "Ver más"}</span>
+     </div>
+   `;
+ }
+ function cardHtml(item){
+   return `
+     <div class="card" data-id="${item.id}">
+       <div class="card-poster">
+         <img src="${item.imageUrl}" alt="${escapeHtml(item.title)}" loading="lazy">
+         <div class="card-play-overlay">
+           <div class="circle">
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="#000"><path d="M8 5v14l11-7z"/></svg>
+           </div>
+         </div>
+       </div>
+       <div class="card-title">${escapeHtml(item.title)}</div>
+       <div class="card-meta">
+         <span class="rating-pill">${Number(item.rating).toFixed(1)}</span>
+         <span>${item.year}</span>
+         <span>${item.type === "serie" ? "Serie" : "Película"}</span>
+       </div>
+     </div>
+   `;
+ }
+ /* ============================================================
+    MODAL DE DETALLE
+    ============================================================ */
+ function openDetail(item){
+   currentDetailItem = item;
+   $("#modalImg").src = item.imageUrl;
+   $("#modalTitle").textContent = item.title;
+   $("#modalRating").textContent = Number(item.rating).toFixed(1) + " ★";
+   $("#modalYear").textContent = item.year;
+   $("#modalDuration").textContent = item.duration;
+   $("#modalType").textContent = item.type === "serie" ? "Serie" : "Película";
+   $("#modalDesc").textContent = item.description || "";
+   $("#modalGenre").textContent = item.genre;
+   $("#modalLicense").textContent = item.license;
+   $("#detailModal").classList.add("show");
+   document.body.style.overflow = "hidden";
+ }
+ $("#closeDetail").addEventListener("click", closeDetail);
+ $("#detailModal").addEventListener("click", (e)=>{
+   if(e.target.id === "detailModal") closeDetail();
+ });
+ function closeDetail(){
+   $("#detailModal").classList.remove("show");
+   document.body.style.overflow = "";
+ }
+ $("#modalPlayBtn").addEventListener("click", ()=>{
+   if(currentDetailItem) playVideo(currentDetailItem);
+ });
+ /* ============================================================
+    TRANSMITIR A OTRO DISPOSITIVO
+    ============================================================ */
+ $("#castBtn").addEventListener("click", async ()=>{
+   if(!currentPlayer){
+     showToast("Primer reproduce un video para transmitir.", false);
+     return;
+   }
+   const videoEl = currentPlayer.el_;
+   try{
+     if(videoEl.remote && typeof videoEl.remote.prompt === "function"){
+       await videoEl.remote.prompt();
+     } else if(typeof videoEl.webkitShowPlaybackTargetPicker === "function"){
+       videoEl.webkitShowPlaybackTargetPicker();
+     } else {
+       showToast("Tu navegador no soporta transmitir a otro dispositivo.", false);
+     }
+   }catch(err){
+     console.error(err);
+     showToast("No se encontraron dispositivos disponibles.", false);
+   }
+ });
+ /* ============================================================
+    INICIO
+    ============================================================ */
+ listenCatalog();
+ </script>
+ </body>
+ </html>
